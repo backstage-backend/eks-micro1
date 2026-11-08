@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eks-micro1
+  namespace: default
+  labels:
+    app: eks-micro1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: eks-micro1
+  template:
+    metadata:
+      labels:
+        app: eks-micro1
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: eks-micro1
+          image: CONTAINER_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10

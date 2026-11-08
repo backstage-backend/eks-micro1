@@ -1,0 +1,97 @@
+name: Continuous Delivery
+
+on:
+  workflow_run:
+    workflows:
+      - Build Validation
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME || secrets.EKS_CLUSTER_NAME }}
+  TF_STATE_KEY: services/eks-micro1/kubernetes.tfstate
+  DEPLOYMENT: kubernetes
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    name: deploy-kubernetes
+    runs-on: ubuntu-latest
+    environment: aws-infrastructure
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate deployment configuration
+        run: |
+          test -n "$AWS_REGION" || { echo "::error::AWS_REGION is required in the aws-infrastructure environment"; exit 1; }
+
+          test -n "$EKS_CLUSTER_NAME" || { echo "::error::EKS_CLUSTER_NAME is required as a variable or secret in the aws-infrastructure environment"; exit 1; }
+
+
+
+
+
+
+
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+        run: |
+          docker build --tag "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Configure GHCR pull secret
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          kubectl create secret docker-registry ghcr-pull \
+            --namespace default \
+            --docker-server=ghcr.io \
+            --docker-username="$GHCR_USERNAME" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+
+
+
+      - name: Configure kubectl
+        env:
+          EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+
+      - name: Apply Kubernetes manifests
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+        run: |
+          sed "s#CONTAINER_IMAGE#$IMAGE#g" k8s/deployment.yaml | kubectl apply -f -
+          kubectl apply -f k8s/service.yaml
+          kubectl rollout status deployment/eks-micro1 --namespace default --timeout=5m
+          kubectl get deployment/eks-micro1 --namespace default
+
+
+
